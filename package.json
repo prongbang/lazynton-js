@@ -1,0 +1,54 @@
+{
+  "name": "lazynton-js",
+  "version": "0.1.0",
+  "description": "E2EE client for lazynton (XChaCha20-Poly1305 + X25519): managed sessions, encrypted-at-rest storage, fetch/axios adapters",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup index.ts --format esm,cjs --dts --clean",
+    "test": "bun test",
+    "prepublishOnly": "bun test && bun run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/prongbang/lazynton-js.git"
+  },
+  "homepage": "https://github.com/prongbang/lazynton-js#readme",
+  "bugs": {
+    "url": "https://github.com/prongbang/lazynton-js/issues"
+  },
+  "keywords": [
+    "e2ee",
+    "encryption",
+    "xchacha20-poly1305",
+    "x25519",
+    "lazyxchacha",
+    "lazynton",
+    "axum",
+    "axios",
+    "fetch"
+  ],
+  "author": "prongbang",
+  "license": "MIT",
+  "dependencies": {
+    "lazyxchacha": "^1.0.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "axios": "^1.18.1",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0"
+  }
+}
