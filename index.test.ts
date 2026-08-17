@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 import axios from "axios";
-import { generateKeyPair, sharedKey } from "lazyxchacha";
+import { from_hex, new_keypair, shared_key, to_hex } from "lazyxchacha";
 import {
   attachAxios,
+  decryptBytes,
   decryptFromBinary,
   E2eeSession,
+  encryptBytes,
   encryptToBinary,
   LazyntonClient,
   secureStore,
@@ -17,12 +19,6 @@ const KEY = "edf9d004edae8335f095bb8e01975c42cf693ea60322b75cb7c6667dc836fd7e";
 const RUST_FIXTURE_HEX =
   "2f97429e5b16e79e1b45a757d2c3ac6962a78128db2edc9c6b593db6c2e03e5d04033915865c5b1b28ed79f965b02500b7a1eda88b74a587679f1112a3e0ce9d";
 
-function fromHex(hexStr: string): Uint8Array {
-  const bytes = new Uint8Array(hexStr.length / 2);
-  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hexStr.slice(i * 2, i * 2 + 2), 16);
-  return bytes;
-}
-
 function mapStore(): SessionStore & { map: Map<string, string> } {
   const map = new Map<string, string>();
   return {
@@ -33,21 +29,46 @@ function mapStore(): SessionStore & { map: Map<string, string> } {
   };
 }
 
-// Mock lazynton server: /handshake + encrypted echo, counts handshakes.
-function mockServer() {
+// Mock lazynton server mirroring lazynton-rs 0.3: a handshake that speaks both
+// the binary and the legacy JSON format, plus an encrypted echo endpoint.
+// `jsonOnly` stands in for a server that predates the binary handshake.
+function mockServer({ jsonOnly = false } = {}) {
   const sessions = new Map<string, string>();
   let handshakes = 0;
+  let binaryHandshakes = 0;
   const server = Bun.serve({
     port: 0,
     async fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === "/handshake") {
         handshakes++;
+        const kp = new_keypair();
+        const sid = crypto.getRandomValues(new Uint8Array(16));
+        const wantsJson = req.headers.get("content-type")?.startsWith("application/json");
+
+        if (!wantsJson) {
+          if (jsonOnly) return new Response(null, { status: 415 });
+          binaryHandshakes++;
+          const clientPk = new Uint8Array(await req.arrayBuffer());
+          if (clientPk.length !== 32) return new Response(null, { status: 400 });
+          sessions.set(to_hex(sid), shared_key(to_hex(clientPk), kp.sk));
+          // session_id(16) || server_public_key(32) || expires_in(u32 big-endian)
+          const frame = new Uint8Array(52);
+          frame.set(sid);
+          frame.set(from_hex(kp.pk), 16);
+          new DataView(frame.buffer).setUint32(48, 3600);
+          return new Response(frame, {
+            headers: { "content-type": "application/octet-stream" },
+          });
+        }
+
         const { clientPublicKey } = (await req.json()) as { clientPublicKey: string };
-        const kp = generateKeyPair();
-        const sid = crypto.randomUUID();
-        sessions.set(sid, sharedKey(kp.sk, clientPublicKey));
-        return Response.json({ sessionId: sid, serverPublicKey: kp.pk, expiresIn: 3600 });
+        sessions.set(to_hex(sid), shared_key(clientPublicKey, kp.sk));
+        return Response.json({
+          sessionId: to_hex(sid),
+          serverPublicKey: kp.pk,
+          expiresIn: 3600,
+        });
       }
       const key = sessions.get(req.headers.get("x-session-id") ?? "");
       if (!key) return new Response("unauthorized", { status: 401 });
@@ -57,7 +78,7 @@ function mockServer() {
       });
     },
   });
-  return { server, sessions, handshakes: () => handshakes };
+  return { server, sessions, handshakes: () => handshakes, binaryHandshakes: () => binaryHandshakes };
 }
 
 test("binary roundtrip", () => {
@@ -68,7 +89,16 @@ test("binary roundtrip", () => {
 });
 
 test("decrypts ciphertext produced by the Rust implementation", () => {
-  expect(decryptFromBinary(fromHex(RUST_FIXTURE_HEX), KEY)).toBe('{"msg":"cross-language"}');
+  expect(decryptFromBinary(from_hex(RUST_FIXTURE_HEX), KEY)).toBe('{"msg":"cross-language"}');
+});
+
+test("raw byte roundtrip carries arbitrary binary, including an empty payload", () => {
+  const data = new Uint8Array([0, 1, 2, 255, 128, 0]);
+  expect(decryptBytes(encryptBytes(data, KEY), KEY)).toEqual(data);
+
+  const empty = encryptBytes(new Uint8Array(0), KEY);
+  expect(empty.length).toBe(24 + 16);
+  expect(decryptBytes(empty, KEY).length).toBe(0);
 });
 
 test("rejects short, tampered, and wrong-key input", () => {
@@ -81,9 +111,10 @@ test("rejects short, tampered, and wrong-key input", () => {
 });
 
 test("both sides of an X25519 exchange derive the same key", () => {
-  const client = generateKeyPair();
-  const server = generateKeyPair();
-  expect(sharedKey(client.sk, server.pk)).toBe(sharedKey(server.sk, client.pk));
+  const client = new_keypair();
+  const server = new_keypair();
+  // 1.0.2 takes (theirPublicKey, mySecretKey) — the reverse of the 1.0.1 order.
+  expect(shared_key(server.pk, client.sk)).toBe(shared_key(client.pk, server.sk));
 });
 
 test("withSharedKey validates key format", () => {
@@ -91,12 +122,45 @@ test("withSharedKey validates key format", () => {
 });
 
 test("auto-handshake on first post, then reuses the session", async () => {
-  const { server, handshakes } = mockServer();
+  const { server, handshakes, binaryHandshakes } = mockServer();
   using srv = server;
   const client = new LazyntonClient(srv.url.origin);
   const res = await client.post<{ echo: { msg: string } }>("/echo", { msg: "hi" });
   expect(res.echo.msg).toBe("hi");
   await client.post("/echo", { msg: "again" });
+  expect(handshakes()).toBe(1);
+  // The default takes lazynton's binary handshake, not the legacy JSON one.
+  expect(binaryHandshakes()).toBe(1);
+});
+
+test("falls back to the JSON handshake once against a server without the binary one", async () => {
+  const { server, handshakes } = mockServer({ jsonOnly: true });
+  using srv = server;
+  const client = new LazyntonClient(srv.url.origin);
+  const res = await client.post<{ echo: { n: number } }>("/echo", { n: 1 });
+  expect(res.echo.n).toBe(1);
+  expect(handshakes()).toBe(2); // rejected binary probe, then JSON
+
+  // The fallback is remembered: a re-handshake goes straight to JSON.
+  await client.session.invalidate();
+  await client.post("/echo", { n: 2 });
+  expect(handshakes()).toBe(3);
+});
+
+test("handshakeFormat: 'json' skips the binary probe entirely", async () => {
+  const { server, handshakes, binaryHandshakes } = mockServer();
+  using srv = server;
+  const client = new LazyntonClient(srv.url.origin, { handshakeFormat: "json" });
+  await client.post("/echo", { n: 1 });
+  expect(handshakes()).toBe(1);
+  expect(binaryHandshakes()).toBe(0);
+});
+
+test("handshakeFormat: 'binary' surfaces the error instead of falling back", async () => {
+  const { server, handshakes } = mockServer({ jsonOnly: true });
+  using srv = server;
+  const client = new LazyntonClient(srv.url.origin, { handshakeFormat: "binary" });
+  expect(client.post("/echo", { n: 1 })).rejects.toThrow(/415/);
   expect(handshakes()).toBe(1);
 });
 
