@@ -2,7 +2,7 @@
 
 TypeScript E2EE client for [lazynton](https://github.com/prongbang/lazynton-rs)
 (axum end-to-end encryption middleware), built on
-[lazyxchacha](https://www.npmjs.com/package/lazyxchacha) 1.0.3 — the WebAssembly
+[lazyxchacha](https://www.npmjs.com/package/lazyxchacha) 1.0.5 — the WebAssembly
 build of the Rust implementation (XChaCha20-Poly1305 + X25519). Speaks
 [lazynton-rs](https://github.com/prongbang/lazynton-rs) 0.3's binary wire end to end.
 
@@ -11,9 +11,9 @@ read and written through lazyxchacha's raw byte API so payloads never round-trip
 through a hex string — 7–20× faster than the hex path, the gap widening with
 payload size.
 
-> **Runtime:** lazyxchacha 1.0.3 ships a Node-target wasm build (`require('fs')`,
+> **Runtime:** lazyxchacha 1.0.5 ships a Node-target wasm build (`require('fs')`,
 > CommonJS only). It runs under Node and Bun; bundling it for a browser needs a
-> web-target wasm build of lazyxchacha, which 1.0.3 does not publish.
+> web-target wasm build of lazyxchacha, which 1.0.5 does not publish.
 
 ## Install
 

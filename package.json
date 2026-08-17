@@ -1,6 +1,6 @@
 {
   "name": "lazynton-js",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "E2EE client for lazynton (XChaCha20-Poly1305 + X25519): managed sessions, encrypted-at-rest storage, fetch/axios adapters",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -43,7 +43,7 @@
   "author": "prongbang",
   "license": "MIT",
   "dependencies": {
-    "lazyxchacha": "1.0.3"
+    "lazyxchacha": "1.0.5"
   },
   "devDependencies": {
     "@types/bun": "latest",
