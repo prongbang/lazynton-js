@@ -4,10 +4,39 @@
 // — produced and consumed directly by lazyxchacha's raw byte API, so the
 // payload never round-trips through a hex string.
 
-import { decrypt_raw, encrypt_raw, from_hex, new_keypair, shared_key, to_hex } from "lazyxchacha";
+import initWasm, {
+  decrypt_raw,
+  encrypt_raw,
+  from_hex,
+  new_keypair,
+  shared_key,
+  to_hex,
+} from "lazyxchacha";
 
 const MIN_WIRE_LEN = 24 + 16; // nonce + poly1305 tag
 const KEY_HEX = /^[0-9a-fA-F]{64}$/;
+
+let wasmReady: Promise<void> | undefined;
+
+/** Wait for the WebAssembly module to be usable.
+ *
+ * lazyxchacha ships two builds. The node one instantiates at import time and
+ * exports no initialiser, so this resolves immediately. The browser one fetches
+ * its `.wasm` and must be initialised before any export touches wasm memory —
+ * that is what the default import is.
+ *
+ * Every async method here awaits it already, so callers of `E2eeSession`,
+ * `wrapFetch`, `attachAxios` and `LazyntonClient` never need to. Await it once
+ * before reaching for the synchronous helpers (`encryptBytes`, `decryptBytes`,
+ * `encryptToBinary`, `decryptFromBinary`) in a browser. Idempotent and
+ * concurrency-safe: every caller shares one initialisation. */
+export function ready(): Promise<void> {
+  wasmReady ??=
+    typeof initWasm === "function"
+      ? Promise.resolve(initWasm()).then(() => undefined)
+      : Promise.resolve();
+  return wasmReady;
+}
 
 // Binary handshake frame, mirroring lazynton-rs:
 // session_id(16) || server_public_key(32) || expires_in_secs(u32 big-endian).
@@ -122,6 +151,7 @@ export function secureStore(
       const raw = await back.getItem(k);
       if (!raw) return null;
       try {
+        await ready();
         const data = from_hex(raw) as Uint8Array<ArrayBuffer>;
         const plain = await crypto.subtle.decrypt(
           { name: "AES-GCM", iv: data.subarray(0, 12) },
@@ -134,6 +164,7 @@ export function secureStore(
       }
     },
     async setItem(k, v) {
+      await ready();
       const iv = crypto.getRandomValues(new Uint8Array(12));
       const ct = new Uint8Array(
         await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await keyP, utf8Encoder.encode(v)),
@@ -289,6 +320,9 @@ export class E2eeSession {
   }
 
   private async ensureKey(): Promise<string> {
+    // Every encrypt/decrypt path funnels through here, so this is the one place
+    // the browser build's wasm has to be guaranteed live.
+    await ready();
     if (!this.loaded) {
       this.loaded = true;
       try {
@@ -306,6 +340,7 @@ export class E2eeSession {
   }
 
   private async doHandshake(): Promise<void> {
+    await ready();
     const kp = new_keypair();
     const clientPublicKey = kp.pk;
     const clientSecretKey = kp.sk;
